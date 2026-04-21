@@ -1,0 +1,13 @@
+# Основные библиотеки для работы с Google Sheets
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+google-api-python-client==2.86.0
+
+# Дополнительные зависимости
+python-dotenv==1.0.1
+pytz==2024.2
+psutil==6.1.1
+
+# Для экспорта в Excel
+openpyxl==3.1.5
