@@ -24,6 +24,7 @@ import sys
 import logging
 from datetime import datetime, timedelta
 import sqlite3
+import re
 from typing import Any, Dict, List, Tuple, Optional
 import pytz
 import time
@@ -41,6 +42,9 @@ SHEET_NAME = 'Данные'
 DB_FILENAME = 'baltlease_data.db'
 
 logger = configure_logging('export_selected_to_sqlite')
+
+
+UTM_PHONE_SUFFIX_RE = re.compile(r'^(.*)_\d{11}$')
 
 
 def create_sheets_service():
@@ -226,6 +230,30 @@ def normalize_datetime(value: Optional[str]) -> Optional[str]:
     return None
 
 
+def normalize_utm_campaign(value: Optional[str]) -> Optional[str]:
+    """
+    Нормализует значение источника перед записью в БД.
+
+    Если строка оканчивается на `_<11 цифр>`, отбрасывает этот хвост.
+    Примеры:
+    - 'skl.ru_73433111211' -> 'skl.ru'
+    - 'abc_def_12345678901' -> 'abc_def'
+    """
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if text == '':
+        return None
+
+    match = UTM_PHONE_SUFFIX_RE.match(text)
+    if match:
+        normalized = match.group(1).strip()
+        return normalized or None
+
+    return text
+
+
 def process_spreadsheet(service, spreadsheet_id: str, direction: str) -> int:
     """
     Загружает лист, извлекает нужные столбцы и пишет в БД.
@@ -257,7 +285,7 @@ def process_spreadsheet(service, spreadsheet_id: str, direction: str) -> int:
 
         id_int = normalize_int(id_val)
         phone_str = str(phone_val).strip() if phone_val is not None and str(phone_val).strip() else None
-        utm_str = str(utm_val).strip() if utm_val is not None and str(utm_val).strip() else None
+        utm_str = normalize_utm_campaign(utm_val)
         event_at = normalize_datetime(date_val)
 
         # Фильтр: берем только записи за последние 2 суток по Москве
