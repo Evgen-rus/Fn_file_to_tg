@@ -4,10 +4,11 @@
 Скрипт не затрагивает рабочую базу baltlease_data.db и основной пайплайн:
 - читает одну таблицу Google Sheets;
 - сохраняет данные только в отдельную тестовую SQLite-базу;
-- создаёт Excel в корне проекта только для ещё не выгруженных строк;
+- создаёт CSV в корне проекта только для ещё не выгруженных строк;
 - ничего не отправляет в Telegram или на почту.
 """
 
+import csv
 import os
 import sqlite3
 import sys
@@ -28,7 +29,6 @@ from export_selected_to_sqlite import (
     normalize_utm_campaign,
     upsert_rows,
 )
-from export_to_excel import build_workbook, mark_rows_as_sent
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,9 +37,24 @@ TEST_DB_PATH = os.path.join(BASE_DIR, TEST_DB_FILENAME)
 DEFAULT_DIRECTION = "транспорт"
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
+CSV_HEADERS = [
+    "Стадия сделки",
+    "Телефон (мобильный)",
+    "Тип источника (FN)",
+    "Источник (FN)",
+    "Ответственный",
+    "Ответственный (Телемаркетинг)",
+    "Комментарий",
+]
+DEAL_STAGE = "Разобрать/Новая"
+SOURCE_TYPE_FN = "Телемаркетинг"
+SOURCE_FN = "FNG Лиды от LeadRecord"
+RESPONSIBLE = "bitrixbot"
+TELEMARKETING_RESPONSIBLE = "bitrixbot"
+
 
 DbRow = Tuple[int, Optional[str], Optional[str], Optional[str], str, str, str, str]
-ExcelRow = Tuple[str, str, str, str]
+CsvRow = Tuple[str, str]
 
 
 def get_spreadsheet_id() -> str:
@@ -122,14 +137,14 @@ def collect_today_rows(
 def fetch_unexported_today_rows(
     conn: sqlite3.Connection,
     today_iso: str,
-) -> Tuple[List[ExcelRow], List[int]]:
+) -> Tuple[List[CsvRow], List[int]]:
     """
-    Возвращает строки за сегодня, которые ещё не попадали в тестовый Excel.
+    Возвращает строки за сегодня, которые ещё не попадали в тестовый CSV.
     Признак уже выгруженной строки — заполненное поле sent_at в тестовой БД.
     """
     cur = conn.execute(
         """
-        SELECT row_id, phone, utm_campaign, direction, status
+        SELECT row_id, phone, utm_campaign
         FROM leads
         WHERE DATE(event_at) = ?
           AND (sent_at IS NULL OR sent_at = '')
@@ -138,24 +153,60 @@ def fetch_unexported_today_rows(
         (today_iso,),
     )
 
-    rows: List[ExcelRow] = []
+    rows: List[CsvRow] = []
     row_ids: List[int] = []
-    for row_id, phone, utm_campaign, direction, status in cur.fetchall():
+    for row_id, phone, utm_campaign in cur.fetchall():
         row_ids.append(int(row_id))
-        rows.append((phone or "", utm_campaign or "", direction or "", status or ""))
+        rows.append((phone or "", utm_campaign or ""))
 
     return rows, row_ids
 
 
-def save_excel(rows: List[ExcelRow]) -> str:
+def mark_rows_as_exported(conn: sqlite3.Connection, row_ids: List[int], sent_at: str) -> None:
     """
-    Создаёт Excel в корне проекта в том же формате, что основной экспорт.
+    Помечает строки как уже выгруженные в тестовый файл.
     """
-    workbook = build_workbook(rows)
+    if not row_ids:
+        return
+
+    placeholders = ",".join("?" for _ in row_ids)
+    conn.execute(
+        f"""
+        UPDATE leads
+        SET sent_at = ?
+        WHERE row_id IN ({placeholders})
+          AND (sent_at IS NULL OR sent_at = '')
+        """,
+        (sent_at, *row_ids),
+    )
+    conn.commit()
+
+
+def save_csv(rows: List[CsvRow]) -> str:
+    """
+    Создаёт CSV в формате клиентского шаблона.
+    utf-8-sig помогает Excel корректно открыть кириллицу.
+    """
     timestamp = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"LeadRecord_FNG_TEST_today_{timestamp}.xlsx"
+    filename = f"LeadRecord_FNG_TEST_today_{timestamp}.csv"
     file_path = os.path.join(BASE_DIR, filename)
-    workbook.save(file_path)
+
+    with open(file_path, "w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.writer(file, delimiter=";", lineterminator="\n")
+        writer.writerow(CSV_HEADERS)
+        for phone, comment in rows:
+            writer.writerow(
+                [
+                    DEAL_STAGE,
+                    phone,
+                    SOURCE_TYPE_FN,
+                    SOURCE_FN,
+                    RESPONSIBLE,
+                    TELEMARKETING_RESPONSIBLE,
+                    comment,
+                ]
+            )
+
     return file_path
 
 
@@ -188,23 +239,23 @@ def main() -> None:
     with sqlite3.connect(TEST_DB_PATH) as conn:
         ensure_db_schema(conn)
         saved_count = upsert_rows(conn, rows_to_upsert) if rows_to_upsert else 0
-        excel_rows, exported_row_ids = fetch_unexported_today_rows(conn, today_iso)
+        csv_rows, exported_row_ids = fetch_unexported_today_rows(conn, today_iso)
 
         print(f"Строк найдено за сегодня в Google Sheets: {found_today_count}")
         print(f"Строк сохранено/обновлено в тестовой БД: {saved_count}")
         if skipped_invalid_count:
             print(f"Строк пропущено из-за некорректного ID: {skipped_invalid_count}")
 
-        if not excel_rows:
-            print("Новых строк для Excel нет. Файл не создан.")
+        if not csv_rows:
+            print("Новых строк для CSV нет. Файл не создан.")
             return
 
-        file_path = save_excel(excel_rows)
+        file_path = save_csv(csv_rows)
         sent_at = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        mark_rows_as_sent(conn, exported_row_ids, sent_at)
+        mark_rows_as_exported(conn, exported_row_ids, sent_at)
 
-    print(f"Excel-файл создан: {file_path}")
-    print(f"Строк в Excel: {len(excel_rows)}")
+    print(f"CSV-файл создан: {file_path}")
+    print(f"Строк в CSV: {len(csv_rows)}")
     print("Строки помечены как выгруженные в тестовой БД.")
 
 

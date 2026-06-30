@@ -58,6 +58,7 @@ telegram_bot_deploy.tar.gz
 
 # Excel files
 *.xlsx
-
+# CSV files
+*.csv
 # Database files
 *.db
