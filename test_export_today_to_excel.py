@@ -31,7 +31,7 @@ from export_selected_to_sqlite import (
     upsert_rows,
 )
 from email_sender import send_email_with_attachment_with_retries
-from export_to_excel import send_document_with_retries
+from export_to_excel import send_document_with_retries, send_text_message
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -224,7 +224,7 @@ def send_to_telegram(file_path: str, rows_count: int) -> bool:
         print("Telegram не отправлен: не заданы TELEGRAM_BOT_TOKEN_ASSISTANT или TELEGRAM_CHAT_ID.")
         return False
 
-    caption = f"Тестовая выгрузка LeadRecord_FNG: {rows_count}"
+    caption = f"Загружено новых идентификаторов: {rows_count}"
     return send_document_with_retries(
         token=token,
         chat_id=chat_id,
@@ -240,10 +240,9 @@ def send_to_email(file_path: str, rows_count: int) -> Tuple[bool, str]:
     Главный критерий успешной выгрузки — именно успешная отправка email.
     """
     filename = os.path.basename(file_path)
-    subject = f"Тестовая выгрузка LeadRecord_FNG: {rows_count}"
+    subject = f"Новые идентификаторы LeadRecord_FNG: {rows_count}"
     body = (
-        f"Тестовая выгрузка LeadRecord_FNG.\n"
-        f"Новых строк: {rows_count}\n"
+        f"Загружено новых идентификаторов: {rows_count}\n"
         f"Во вложении файл: {filename}"
     )
     return send_email_with_attachment_with_retries(
@@ -252,6 +251,23 @@ def send_to_email(file_path: str, rows_count: int) -> Tuple[bool, str]:
         attachment_path=file_path,
         max_retries=5,
     )
+
+
+def send_email_status_to_telegram(email_ok: bool, email_status_text: str) -> bool:
+    """
+    Отправляет отдельное сообщение со статусом email, как в основном экспорте.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN_ASSISTANT")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return False
+
+    text = (
+        email_status_text
+        if email_ok
+        else f"Письмо на почту не отправлено. Причина: {email_status_text}"
+    )
+    return send_text_message(token, chat_id, text)
 
 
 def remove_file_after_success(file_path: str) -> None:
@@ -315,6 +331,10 @@ def main() -> None:
 
     email_ok, email_status_text = send_to_email(file_path, len(csv_rows))
     print(f"Email: {email_status_text}")
+
+    if telegram_ok:
+        status_message_ok = send_email_status_to_telegram(email_ok, email_status_text)
+        print(f"Статус email в Telegram: {'отправлен' if status_message_ok else 'не отправлен'}")
 
     if not email_ok:
         print("Email не отправлен. Строки не помечены выгруженными, CSV-файл оставлен для проверки.")
