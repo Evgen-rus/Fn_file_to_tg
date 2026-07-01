@@ -5,7 +5,8 @@
 - читает одну таблицу Google Sheets;
 - сохраняет данные только в отдельную тестовую SQLite-базу;
 - создаёт CSV в корне проекта только для ещё не выгруженных строк;
-- ничего не отправляет в Telegram или на почту.
+- отправляет CSV в Telegram и на почту;
+- помечает строки выгруженными только после успешной отправки email.
 """
 
 import csv
@@ -29,6 +30,8 @@ from export_selected_to_sqlite import (
     normalize_utm_campaign,
     upsert_rows,
 )
+from email_sender import send_email_with_attachment_with_retries
+from export_to_excel import send_document_with_retries
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -188,7 +191,7 @@ def save_csv(rows: List[CsvRow]) -> str:
     utf-8-sig помогает Excel корректно открыть кириллицу.
     """
     timestamp = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"LeadRecord_FNG_TEST_today_{timestamp}.csv"
+    filename = f"LeadRecord_FNG_{timestamp}.csv"
     file_path = os.path.join(BASE_DIR, filename)
 
     with open(file_path, "w", encoding="utf-8-sig", newline="") as file:
@@ -208,6 +211,58 @@ def save_csv(rows: List[CsvRow]) -> str:
             )
 
     return file_path
+
+
+def send_to_telegram(file_path: str, rows_count: int) -> bool:
+    """
+    Отправляет тестовый CSV в Telegram.
+    Telegram не является обязательным каналом: ошибка не блокирует выгрузку.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN_ASSISTANT")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("Telegram не отправлен: не заданы TELEGRAM_BOT_TOKEN_ASSISTANT или TELEGRAM_CHAT_ID.")
+        return False
+
+    caption = f"Тестовая выгрузка LeadRecord_FNG: {rows_count}"
+    return send_document_with_retries(
+        token=token,
+        chat_id=chat_id,
+        file_path=file_path,
+        caption=caption,
+        max_retries=3,
+    )
+
+
+def send_to_email(file_path: str, rows_count: int) -> Tuple[bool, str]:
+    """
+    Отправляет тестовый CSV на почту через настройки из .env.
+    Главный критерий успешной выгрузки — именно успешная отправка email.
+    """
+    filename = os.path.basename(file_path)
+    subject = f"Тестовая выгрузка LeadRecord_FNG: {rows_count}"
+    body = (
+        f"Тестовая выгрузка LeadRecord_FNG.\n"
+        f"Новых строк: {rows_count}\n"
+        f"Во вложении файл: {filename}"
+    )
+    return send_email_with_attachment_with_retries(
+        subject=subject,
+        body=body,
+        attachment_path=file_path,
+        max_retries=5,
+    )
+
+
+def remove_file_after_success(file_path: str) -> None:
+    """
+    Удаляет CSV после успешной отправки email.
+    """
+    try:
+        os.remove(file_path)
+        print(f"CSV-файл удалён после успешной отправки email: {file_path}")
+    except OSError as exc:
+        print(f"Предупреждение: не удалось удалить CSV-файл {file_path}: {exc}")
 
 
 def main() -> None:
@@ -251,12 +306,26 @@ def main() -> None:
             return
 
         file_path = save_csv(csv_rows)
-        sent_at = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        mark_rows_as_exported(conn, exported_row_ids, sent_at)
 
     print(f"CSV-файл создан: {file_path}")
     print(f"Строк в CSV: {len(csv_rows)}")
-    print("Строки помечены как выгруженные в тестовой БД.")
+
+    telegram_ok = send_to_telegram(file_path, len(csv_rows))
+    print(f"Telegram: {'отправлен' if telegram_ok else 'не отправлен'}")
+
+    email_ok, email_status_text = send_to_email(file_path, len(csv_rows))
+    print(f"Email: {email_status_text}")
+
+    if not email_ok:
+        print("Email не отправлен. Строки не помечены выгруженными, CSV-файл оставлен для проверки.")
+        sys.exit(1)
+
+    sent_at = datetime.now(MOSCOW_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(TEST_DB_PATH) as conn:
+        mark_rows_as_exported(conn, exported_row_ids, sent_at)
+
+    print("Строки помечены как выгруженные в тестовой БД после успешного email.")
+    remove_file_after_success(file_path)
 
 
 if __name__ == "__main__":
