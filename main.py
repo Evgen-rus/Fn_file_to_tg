@@ -1,7 +1,7 @@
 """
 Оркестратор запуска:
 1) export_selected_to_sqlite.py — загрузка данных в SQLite из Google Sheets
-2) export_to_excel.py — формирование Excel и отправка в Telegram
+2) export_to_excel.py — формирование CSV и отправка в Telegram/email
 3) update_report_sheet.py — обновление отчётной Google-таблицы по отправленным лидам
 """
 
@@ -47,7 +47,7 @@ def main() -> None:
     if code != 0:
         sys.exit(code)
 
-    # 2) Экспорт в Excel и отправка в Telegram
+    # 2) Экспорт в CSV и отправка в Telegram/email
     code = run_script(excel_script)
     if code != 0:
         sys.exit(code)

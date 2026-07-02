@@ -1,18 +1,21 @@
 """
-Формирование Excel-файла LeadRecord_FNG_YYYYMMDD_HHMMSS.xlsx из SQLite БД.
+Формирование CSV-файла LeadRecord_FNG_YYYY-MM-DD_HH-MM-SS.csv из SQLite БД.
 
-Заполняемые колонки из ТЗ:
+Заполняемые колонки в рабочем файле:
+- Стадия сделки
 - Телефон (мобильный) -> из БД leads.phone
-- UTM_CAMPAIGN -> из БД leads.utm_campaign
-- Направление -> из БД leads.direction
+- Тип источника (FN)
+- Источник (FN)
+- Ответственный
+- Ответственный (Телемаркетинг)
+- Комментарий -> из БД leads.utm_campaign
 
 Инкрементальная выгрузка: скрипт запоминает максимальный внутренний row_id,
 выгруженный по каждому направлению, и при следующем запуске выгружает только
 новые записи.
-
-Для направления сохраняется текущая логика подмены по доменам из utm_campaign.
 """
 
+import csv
 import os
 import sys
 import sqlite3
@@ -44,6 +47,21 @@ HEADERS: List[str] = [
     'UTM_CAMPAIGN',
     'Направление',
 ]
+
+CSV_HEADERS: List[str] = [
+    'Стадия сделки',
+    'Телефон (мобильный)',
+    'Тип источника (FN)',
+    'Источник (FN)',
+    'Ответственный',
+    'Ответственный (Телемаркетинг)',
+    'Комментарий',
+]
+DEAL_STAGE = 'Разобрать/Новая'
+SOURCE_TYPE_FN = 'Телемаркетинг'
+SOURCE_FN = 'FNG Лиды от LeadRecord'
+RESPONSIBLE = 'bitrixbot'
+TELEMARKETING_RESPONSIBLE = 'bitrixbot'
 
 
 # Домены, при наличии которых в UTM_CAMPAIGN направление в выгружаемом файле
@@ -302,6 +320,30 @@ def build_workbook(rows: List[Tuple[str, str, str, str]]) -> Workbook:
     return wb
 
 
+def save_client_csv(rows: List[Tuple[str, str, str, str]], filename: str) -> None:
+    """
+    Сохраняет рабочий файл в клиентском CSV-формате.
+
+    Используем utf-8-sig и разделитель ';', как в тестовом скрипте:
+    так файл обычно корректно открывается в Excel с кириллицей.
+    """
+    with open(filename, 'w', encoding='utf-8-sig', newline='') as file:
+        writer = csv.writer(file, delimiter=';', lineterminator='\n')
+        writer.writerow(CSV_HEADERS)
+        for phone, utm_campaign, direction, status in rows:
+            writer.writerow(
+                [
+                    DEAL_STAGE,
+                    phone or '',
+                    SOURCE_TYPE_FN,
+                    SOURCE_FN,
+                    RESPONSIBLE,
+                    TELEMARKETING_RESPONSIBLE,
+                    utm_campaign or '',
+                ]
+            )
+
+
 def send_text_message(token: str, chat_id: str, text: str, timeout: int = 30) -> bool:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
@@ -389,10 +431,9 @@ def main():
         logger.info("Нет новых строк для выгрузки — файл не создан.")
         return
 
-    wb = build_workbook(rows)
     ts = datetime.now(pytz.timezone('Europe/Moscow')).strftime('%Y-%m-%d_%H-%M-%S')
-    filename = f"LeadRecord_FNG_{ts}.xlsx"
-    wb.save(filename)
+    filename = f"LeadRecord_FNG_{ts}.csv"
+    save_client_csv(rows, filename)
     logger.info(f"Файл сохранён: {filename}")
 
     # Подготовка подписи с учетом остатка по тарифу (считаем остаток до списания)
