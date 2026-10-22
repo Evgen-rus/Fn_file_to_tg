@@ -15,7 +15,7 @@ DB_FILENAME = 'baltlease_data.db'
 TARIFF_TABLE = 'tariff_state'
 
 # Задайте здесь нужный остаток по тарифу (целое число)
-NEW_TARIFF_REMAINING = 6940
+NEW_TARIFF_REMAINING = 2915
 
 
 def ensure_tariff_table(conn: sqlite3.Connection) -> None:
