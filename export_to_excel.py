@@ -430,6 +430,9 @@ def main():
     if not rows:
         logger.info("Нет новых строк для выгрузки — файл не создан.")
         return
+    if len(rows) == 1:
+        logger.info("Найден один идентификатор — отправка отложена до накопления минимум двух.")
+        return
 
     ts = datetime.now(pytz.timezone('Europe/Moscow')).strftime('%Y-%m-%d_%H-%M-%S')
     filename = f"LeadRecord_FNG_{ts}.csv"
